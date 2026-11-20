@@ -1,0 +1,18 @@
+# Build products
+build/
+build-*/
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+
+# Generated from the user's locally installed Japanese game
+japanese_font_atlas.bin
+
+# Runtime files
+logs/
+*.log
+*.sav
+
+

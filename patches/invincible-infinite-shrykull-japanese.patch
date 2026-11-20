@@ -1,0 +1,451 @@
+diff --git a/Source/AliveLibAO/Abe.cpp b/Source/AliveLibAO/Abe.cpp
+index 44a3135e19f370dc25892d594c420900331bc0ef..4ca1ea34ccb905b309596bfe9268ab73654785ec 100644
+--- a/Source/AliveLibAO/Abe.cpp
++++ b/Source/AliveLibAO/Abe.cpp
+@@ -62,11 +62,32 @@
+ 
+ namespace AO {
+ 
+-ALIVE_VAR(1, 0x5076E4, s16, gAbeInvulnerableCheat_5076E4, 0);
++// User mod: keep the game's built-in Abe invulnerability flag enabled.
++ALIVE_VAR(1, 0x5076E4, s16, gAbeInvulnerableCheat_5076E4, 1);
+ ALIVE_VAR(1, 0x5076F8, s16, gAbeInvisibleCheat_5076F8, 0);
+ 
+ ALIVE_VAR_EXTERN(SaveData, gSaveBuffer_505668);
+ 
++static void EnsureInfiniteShrykullResources()
++{
++    const bool morphResourcesMissing =
++        !ResourceManager::GetLoadedResource_4554F0(ResourceManager::Resource_Animation, AOResourceID::kAbemorphAOResID, 0, 0)
++        || !ResourceManager::GetLoadedResource_4554F0(ResourceManager::Resource_Animation, AOResourceID::kShrmorphAOResID, 0, 0);
++
++    const bool splineResourceMissing =
++        !ResourceManager::GetLoadedResource_4554F0(ResourceManager::Resource_Animation, AOResourceID::kSplineAOResID, 0, 0);
++
++    if (morphResourcesMissing)
++    {
++        ResourceManager::LoadResourceFile_455270("SHRYPORT.BND", nullptr);
++    }
++
++    if (splineResourceMissing)
++    {
++        ResourceManager::LoadResourceFile_455270("SPLINE.BAN", nullptr);
++    }
++}
++
+ using TAbeMotionFunction = decltype(&Abe::Motion_0_Idle_423520);
+ 
+ #define MAKE_STRINGS(VAR) #VAR,
+@@ -993,7 +1014,10 @@ Abe* Abe::ctor_420770(s32 frameTableOffset, s32 /*r*/, s32 /*g*/, s32 /*b*/)
+     field_10C_prev_held = 0; // lowest to base class
+     field_E6_last_anim_frame = 0;
+     field_110_state.raw = 0;
+-    field_168_ring_pulse_timer = 0;
++    EnsureInfiniteShrykullResources();
++    field_168_ring_pulse_timer = gnFrameCount_507670 + 32000;
++    field_16C_bHaveShrykull = TRUE;
++    field_154_bSavedHaveShrykull = TRUE;
+     field_114_gnFrame = gnFrameCount_507670;
+     field_F0_pTlv = nullptr;
+     field_160_pRope = nullptr;
+@@ -1164,6 +1188,13 @@ void Abe::vUpdate_41FDB0()
+             field_100_health = FP_FromInteger(1);
+         }
+ 
++        // User mod: grant Shrykull immediately and keep it available forever,
++        // including after loading a save that did not originally contain it.
++        EnsureInfiniteShrykullResources();
++        field_16C_bHaveShrykull = TRUE;
++        field_154_bSavedHaveShrykull = TRUE;
++        field_168_ring_pulse_timer = gnFrameCount_507670 + 32000;
++
+         if (!Input_IsChanting_4334C0())
+         {
+             field_2A8_flags.Clear(Flags_2A8::e2A8_Bit7);
+@@ -3182,12 +3213,8 @@ void Abe::vScreenChanged_422640()
+ 
+             ResourceManager::FreeResource_455550(ResourceManager::GetLoadedResource_4554F0(ResourceManager::ResourceType::Resource_Palt, AOResourceID::kAberockAOResID, 0, 0));
+ 
+-            if (field_168_ring_pulse_timer > 0 && field_16C_bHaveShrykull)
+-            {
+-                Free_Shrykull_Resources_42F4C0();
+-            }
+-
+-            field_168_ring_pulse_timer = 0;
++            // User mod: Shrykull is permanent, so retain its resources and timer
++            // while changing levels.
+         }
+ 
+         if (gMap_507BA8.field_A_level == LevelIds::eCredits_10 || gMap_507BA8.field_A_level == LevelIds::eMenu_0)
+@@ -7094,14 +7121,7 @@ void Abe::Motion_60_Dead_42C4C0()
+                 field_118_timer = gnFrameCount_507670 + 2;
+                 field_114_gnFrame = 0;
+                 MusicController::PlayMusic_443810(MusicController::MusicTypes::eType0, this, 1, 0);
+-                if (field_168_ring_pulse_timer && field_16C_bHaveShrykull)
+-                {
+-                    Abe::Free_Shrykull_Resources_42F4C0();
+-                }
+-                else if (field_144_saved_level != LevelIds::eRuptureFarmsReturn_13 || field_142_saved_path != 6)
+-                {
+-                    field_168_ring_pulse_timer = 0;
+-                }
++                // User mod: keep permanent Shrykull resources across respawns.
+                 field_130_say = -1;
+                 field_D0_pShadow->field_14_flags.Clear(Shadow::Flags::eBit2_Enabled);
+             }
+diff --git a/Source/AliveLibAO/Font.cpp b/Source/AliveLibAO/Font.cpp
+index c4b99fb75de039923c49f85a02c397a70b9d5e8f..cf27b37ea4e107cc9746bb9cdf8a8fd1b80ce2db 100644
+--- a/Source/AliveLibAO/Font.cpp
++++ b/Source/AliveLibAO/Font.cpp
+@@ -12,6 +12,14 @@
+ #include "Math.hpp"
+ #include "../AliveLibAE/Renderer/IRenderer.hpp"
+ 
++#include <array>
++#include <cstdio>
++#include <string>
++
++#if _WIN32
++#include <Windows.h>
++#endif
++
+ namespace AO {
+ 
+ ALIVE_VAR(1, 0x4FFD68, FontContext, sFontContext_4FFD68, {});
+@@ -243,6 +251,134 @@ const Font_AtlasEntry sFont2Atlas_4C58B8[104] = {
+     {40, 132, 20, 15},
+     {60, 132, 20, 15}};
+ 
++namespace
++{
++constexpr size_t kJapaneseAtlasEntryCount = 238;
++std::array<Font_AtlasEntry, kJapaneseAtlasEntryCount> sJapaneseFont1Atlas = {};
++std::array<Font_AtlasEntry, kJapaneseAtlasEntryCount> sJapaneseFont2Atlas = {};
++
++bool LoadJapaneseFontAtlases()
++{
++    static bool attempted = false;
++    static bool loaded = false;
++    if (attempted)
++    {
++        return loaded;
++    }
++    attempted = true;
++
++#if _WIN32
++    char_type modulePath[MAX_PATH] = {};
++    if (!::GetModuleFileNameA(nullptr, modulePath, MAX_PATH))
++    {
++        return false;
++    }
++
++    std::string atlasPath = modulePath;
++    const auto separator = atlasPath.find_last_of("\\/");
++    if (separator == std::string::npos)
++    {
++        return false;
++    }
++    atlasPath.resize(separator + 1);
++    atlasPath += "japanese_font_atlas.bin";
++
++    FILE* file = ::fopen(atlasPath.c_str(), "rb");
++    if (!file)
++    {
++        LOG_WARNING("Japanese font atlas was not found at " << atlasPath);
++        return false;
++    }
++
++    const bool readFont1 = ::fread(sJapaneseFont1Atlas.data(), sizeof(Font_AtlasEntry), sJapaneseFont1Atlas.size(), file) == sJapaneseFont1Atlas.size();
++    const bool readFont2 = ::fread(sJapaneseFont2Atlas.data(), sizeof(Font_AtlasEntry), sJapaneseFont2Atlas.size(), file) == sJapaneseFont2Atlas.size();
++    const bool exactSize = ::fgetc(file) == EOF;
++    ::fclose(file);
++    loaded = readFont1 && readFont2 && exactSize;
++    if (loaded)
++    {
++        LOG_INFO("Loaded Japanese Oddysee font atlases from " << atlasPath);
++    }
++    else
++    {
++        LOG_WARNING("Japanese font atlas has an invalid size: " << atlasPath);
++    }
++#endif
++    return loaded;
++}
++
++bool IsJapaneseAtlas(const FontContext* context)
++{
++    return context->field_8_atlas_array == sJapaneseFont1Atlas.data()
++           || context->field_8_atlas_array == sJapaneseFont2Atlas.data();
++}
++
++bool IsPlainAsciiText(const char_type* text)
++{
++    for (const u8* ptr = reinterpret_cast<const u8*>(text); *ptr; ++ptr)
++    {
++        if (*ptr >= 128)
++        {
++            return false;
++        }
++    }
++    return true;
++}
++
++s32 JapaneseAtlasIndex(u8 character, bool plainAsciiText)
++{
++    if (character == ' ' || character < 8)
++    {
++        return 1;
++    }
++
++    if (plainAsciiText)
++    {
++        if (character >= '0' && character <= '9')
++        {
++            return 15 + character - '0';
++        }
++        if (character >= 'A' && character <= 'Z')
++        {
++            return 212 + character - 'A';
++        }
++        if (character >= 'a' && character <= 'z')
++        {
++            return 212 + character - 'a';
++        }
++        // The Japanese atlas has no general ASCII punctuation set. Keeping its
++        // spacing makes hard-coded R.E.L.I.V.E. English labels readable.
++        return 1;
++    }
++
++    if (character >= 8 && character <= 20)
++    {
++        return character - 6;
++    }
++    if (character <= 32)
++    {
++        return 1;
++    }
++
++    const s32 index = character - 31;
++    return index < static_cast<s32>(kJapaneseAtlasEntryCount) ? index : 1;
++}
++
++s32 AtlasIndex(const FontContext* context, u8 character, bool plainAsciiText)
++{
++    if (IsJapaneseAtlas(context))
++    {
++        return JapaneseAtlasIndex(character, plainAsciiText);
++    }
++
++    if (character <= 32 || character > 175)
++    {
++        return character >= 8 && character <= 31 ? character + 84 : 1;
++    }
++    return character - 31;
++}
++} // namespace
++
+ 
+ void CC FontContext::static_ctor_41C010()
+ {
+@@ -272,10 +408,10 @@ void FontContext::LoadFontType_41C040(s16 resourceID)
+     switch (resourceID)
+     {
+         case 1:
+-            field_8_atlas_array = sFont1Atlas_4C56E8;
++            field_8_atlas_array = LoadJapaneseFontAtlases() ? sJapaneseFont1Atlas.data() : sFont1Atlas_4C56E8;
+             break;
+         case 2:
+-            field_8_atlas_array = sFont2Atlas_4C58B8;
++            field_8_atlas_array = LoadJapaneseFontAtlases() ? sJapaneseFont2Atlas.data() : sFont2Atlas_4C58B8;
+             break;
+         default:
+             ALIVE_FATAL("Unknown font resource ID !!!");
+@@ -323,27 +459,17 @@ AliveFont* AliveFont::ctor_41C170(s32 maxCharLength, const u8* palette, FontCont
+ EXPORT u32 AliveFont::MeasureWidth_41C2B0(const char_type* text)
+ {
+     s32 result = 0;
++    const bool plainAsciiText = IsPlainAsciiText(text);
+ 
+     for (u32 i = 0; i < strlen(text); i++)
+     {
+-        const char_type c = text[i];
+-        s32 charIndex = 0;
++        const u8 c = static_cast<u8>(text[i]);
++        const s32 charIndex = AtlasIndex(field_34_font_context, c, plainAsciiText);
+ 
+-        if (c <= 32 || static_cast<u8>(c) > 175)
++        if (charIndex == 1)
+         {
+-            if (c < 7 || c > 31)
+-            {
+-                result += field_34_font_context->field_8_atlas_array[1].field_2_width;
+-                continue;
+-            }
+-            else
+-            {
+-                charIndex = c + 137;
+-            }
+-        }
+-        else
+-        {
+-            charIndex = c - 31;
++            result += field_34_font_context->field_8_atlas_array[1].field_2_width;
++            continue;
+         }
+ 
+         result += field_34_font_context->field_8_atlas_array[0].field_2_width;
+@@ -361,22 +487,9 @@ EXPORT u32 AliveFont::MeasureWidth_41C2B0(const char_type* text)
+ 
+ EXPORT s32 AliveFont::MeasureWidth_41C200(char_type character)
+ {
+-    s32 result = 0;
+-    s32 charIndex = 0;
+-
+-    if (character <= 32 || character > 175)
+-    {
+-        if (character < 8 || character > 31)
+-        {
+-            return field_34_font_context->field_8_atlas_array[1].field_2_width;
+-        }
+-        charIndex = character + 84;
+-    }
+-    else
+-    {
+-        charIndex = character - 31;
+-    }
+-    result = field_34_font_context->field_8_atlas_array[charIndex].field_2_width;
++    const u8 value = static_cast<u8>(character);
++    const s32 charIndex = AtlasIndex(field_34_font_context, value, value < 128);
++    s32 result = field_34_font_context->field_8_atlas_array[charIndex].field_2_width;
+ 
+     if (!sFontDrawScreenSpace_508BF4)
+     {
+@@ -404,6 +517,7 @@ EXPORT s32 AliveFont::DrawString_41C360(PrimHeader** ppOt, const char_type* text
+     const s32 maxRenderX = PsxToPCX(maxRenderWidth, 11);
+     s16 offsetX = x;
+     s32 charInfoIndex = 0;
++    const bool plainAsciiText = IsPlainAsciiText(text);
+     auto poly = &field_24_fnt_poly_array[gPsxDisplay_504C78.field_A_buffer_index + (2 * polyOffset)];
+ 
+     const s32 tpage = PSX_getTPage_4965D0(TPageMode::e4Bit_0, abr, field_34_font_context->field_0_rect.x & ~63, field_34_font_context->field_0_rect.y);
+@@ -418,18 +532,11 @@ EXPORT s32 AliveFont::DrawString_41C360(PrimHeader** ppOt, const char_type* text
+ 
+         const u8 c = text[i];
+ 
+-        if (c <= 32 || c > 175)
+-        {
+-            if (c < 8 || c > 31)
+-            {
+-                offsetX += field_34_font_context->field_8_atlas_array[0].field_2_width + field_34_font_context->field_8_atlas_array[1].field_2_width;
+-                continue;
+-            }
+-            charInfoIndex = c + 84;
+-        }
+-        else
++        charInfoIndex = AtlasIndex(field_34_font_context, c, plainAsciiText);
++        if (charInfoIndex == 1)
+         {
+-            charInfoIndex = c - 31;
++            offsetX += field_34_font_context->field_8_atlas_array[0].field_2_width + field_34_font_context->field_8_atlas_array[1].field_2_width;
++            continue;
+         }
+ 
+         const auto fContext = field_34_font_context;
+@@ -514,23 +621,16 @@ const char_type* AliveFont::SliceText_41C6C0(const char_type* text, s32 left, FP
+         xOff = PsxToPCX(left, 11);
+     }
+ 
++    const bool plainAsciiText = IsPlainAsciiText(text);
+     for (const char_type* strPtr = text; *strPtr; strPtr++)
+     {
+-        s32 atlasIdx = 0;
+-        char_type character = *strPtr;
++        const u8 character = static_cast<u8>(*strPtr);
+         if (xOff >= rightWorldSpace)
+         {
+             break;
+         }
+ 
+-        if (character <= 32 || character > 122)
+-        {
+-            atlasIdx = character < 8 || character > 31 ? 1 : character + 84;
+-        }
+-        else
+-        {
+-            atlasIdx = character - 31;
+-        }
++        const s32 atlasIdx = AtlasIndex(field_34_font_context, character, plainAsciiText);
+ 
+         xOff += static_cast<s32>(field_34_font_context->field_8_atlas_array[atlasIdx].field_2_width * FP_GetDouble(scale)) + field_34_font_context->field_8_atlas_array->field_2_width;
+         text = strPtr;
+diff --git a/Source/AliveLibAO/Shrykull.cpp b/Source/AliveLibAO/Shrykull.cpp
+index 1e86cd23f490317a3c928cce33e82fd92bf96015..fdac03539f5b4a0c0d71465e0dc07088d2e5ceba 100644
+--- a/Source/AliveLibAO/Shrykull.cpp
++++ b/Source/AliveLibAO/Shrykull.cpp
+@@ -271,7 +271,9 @@ void Shrykull::VUpdate_463AE0()
+ 
+                     field_10C_state = State::eKillTargets_4;
+                     field_110_timer = gnFrameCount_507670 + 12;
+-                    field_122_bResetRingTimer = 1;
++                    // User mod: do not consume Shrykull after it kills a target.
++                    // ExitShrykull_42F440() only clears Abe's ring timer when this is 1.
++                    field_122_bResetRingTimer = 0;
+                     return;
+                 }
+             }
+diff --git a/Source/relive/Exe.cpp b/Source/relive/Exe.cpp
+index 381d98c0389740dfe5c6e2b7c7280d6195b471d1..dcb744ae250fc5957c8003012fd9d8bead97a3ba 100644
+--- a/Source/relive/Exe.cpp
++++ b/Source/relive/Exe.cpp
+@@ -200,6 +200,36 @@ static bool CheckRequiredGameFilesExist(GameType gameType, bool showError)
+     }
+ }
+ 
++#if _WIN32
++static void SelectBundledOddyseeGameDirectory()
++{
++    if (FileExists("s1.lvl") && FileExists("r1.lvl"))
++    {
++        return;
++    }
++
++    char_type modulePath[MAX_PATH] = {};
++    if (!::GetModuleFileNameA(nullptr, modulePath, MAX_PATH))
++    {
++        return;
++    }
++
++    std::string gameDirectory = modulePath;
++    // Installed layout: <game>\Codex_Mods\InvincibleInfiniteShrykull\<exe>
++    for (s32 i = 0; i < 3; ++i)
++    {
++        const auto separator = gameDirectory.find_last_of("\\/");
++        if (separator == std::string::npos)
++        {
++            return;
++        }
++        gameDirectory.resize(separator);
++    }
++
++    ::SetCurrentDirectoryA(gameDirectory.c_str());
++}
++#endif
++
+ static BaseGameAutoPlayer& GetGameAutoPlayerAO()
+ {
+     static AO::GameAutoPlayer autoPlayer;
+@@ -251,8 +281,11 @@ s32 WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
+ #endif
+     LOG_INFO("Relive: " << BuildAndBitnesString());
+ 
+-    // Default to AE but allow switching to AO with a command line, if AO is anywhere in the command line then assume we want to run AO
+-    GameType gameToRun = strstr(lpCmdLine, "AO") ? GameType::eAo : GameType::eAe;
++    // This user build is exclusively for Abe's Oddysee.
++    GameType gameToRun = GameType::eAo;
++#if _WIN32
++    SelectBundledOddyseeGameDirectory();
++#endif
+     ShowCwd();
+ 
+     if (gameToRun == GameType::eAo)
+
